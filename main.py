@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_conn():
-    # Supabase Session Pooler URI 사용 (DATABASE_URL 에 이미 설정돼 있다고 가정)
+    # Supabase Session Pooler / IPv4 용 DSN 이 DATABASE_URL 에 들어있다고 가정
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
     return conn
@@ -65,7 +65,6 @@ def init_db():
             );
             """
         )
-        # 같은 상품 + 같은 핸들 중복 등록 방지
         cur.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_winners_product_handle
@@ -98,19 +97,36 @@ def add_winners(product_name: str, handles: list[str]):
 
 
 def delete_product_winners(product_name: str):
+    """해당 상품의 기록 전체 삭제 (전화번호 포함)"""
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM winners WHERE product_name = %s;", (product_name,))
 
 
 def delete_winner_by_handle(handle: str):
+    """특정 핸들의 모든 기록 삭제 (전화번호 포함)"""
     if not handle.startswith("@"):
         handle = "@" + handle
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM winners WHERE handle = %s;", (handle,))
 
 
+def clear_all_phones():
+    """모든 당첨자의 전화번호만 삭제"""
+    with closing(get_conn()) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE winners SET phone_number = NULL;")
+
+
+def clear_product_phones(product_name: str):
+    """특정 상품의 전화번호만 삭제"""
+    with closing(get_conn()) as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE winners SET phone_number = NULL WHERE product_name = %s;",
+            (product_name,),
+        )
+
+
 def get_winners_grouped():
-    """상품별 당첨자 핸들 리스트 (전화번호는 제외)"""
+    """상품별 당첨자 핸들 리스트 (전화번호 제외)"""
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
             """
@@ -128,7 +144,7 @@ def get_winners_grouped():
 
 
 def find_pending_handle_for_user(username: str):
-    """해당 유저 핸들이 winners 테이블에 있고, 전화번호가 아직 없는지 확인"""
+    """해당 유저 핸들이 winners 테이블에 있는지 확인"""
     if not username:
         return None
     handle = "@" + username if not username.startswith("@") else username
@@ -163,10 +179,7 @@ def update_phone_for_handle(handle: str, phone_number: str):
 
 
 def get_winners_with_phones():
-    """
-    관리자용: 상품별 (handle, phone_number) 리스트
-    phone_number 가 NULL 이면 None 으로 반환
-    """
+    """관리자용: 상품별 (handle, phone_number) 리스트"""
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
             """
@@ -217,6 +230,8 @@ ADMIN_HELP_TEXT = (
     "/delete_product_winners - 특정 상품의 당첨자 전체 삭제\n"
     "/delete_winner - 특정 당첨자 삭제\n"
     "/show_winners - 상품별 당첨자 전화번호 보기\n"
+    "/clear_phones_product - 상품별 전화번호만 삭제\n"
+    "/clear_phones_all - 전체 전화번호 삭제\n"
 )
 
 
@@ -290,8 +305,6 @@ async def process_add_winner_product(message: types.Message):
         dp.unregister_message_handler(process_add_winner_product)
         return
 
-    # 다음 단계에서 사용할 상품명을 message 객체에 붙여둔다
-    message.conf["product_name"] = product_name
     await message.reply(
         "당첨자 핸들을 한 줄에 하나씩 입력해주세요.\n"
         "입력이 끝나면 /end 를 입력하세요."
@@ -316,7 +329,9 @@ async def process_add_winner_handles(message: types.Message, product_name: str):
 
     handles = [line.strip() for line in text.splitlines() if line.strip()]
     add_winners(product_name, handles)
-    await message.reply(f"다음 당첨자들이 '{product_name}' 상품에 추가되었습니다.\n" + "\n".join(handles))
+    await message.reply(
+        f"다음 당첨자들이 '{product_name}' 상품에 추가되었습니다.\n" + "\n".join(handles)
+    )
 
 
 @dp.message_handler(commands=["delete_product_winners"])
@@ -393,6 +408,43 @@ async def cmd_show_winners(message: types.Message):
     await message.reply("\n".join(lines))
 
 
+@dp.message_handler(commands=["clear_phones_all"])
+async def cmd_clear_phones_all(message: types.Message):
+    """모든 당첨자의 전화번호 초기화 (행은 유지)"""
+    if not is_admin(message.from_user.id):
+        return
+
+    clear_all_phones()
+    await message.reply("모든 상품의 당첨자 전화번호가 삭제되었습니다.")
+
+
+@dp.message_handler(commands=["clear_phones_product"])
+async def cmd_clear_phones_product(message: types.Message):
+    """특정 상품의 전화번호만 초기화"""
+    if not is_admin(message.from_user.id):
+        return
+
+    await message.reply("전화번호를 삭제할 상품명을 입력해주세요.")
+    dp.register_message_handler(
+        process_clear_phones_product,
+        state=None,
+        content_types=types.ContentTypes.TEXT,
+        user_id=message.from_user.id,
+    )
+
+
+async def process_clear_phones_product(message: types.Message):
+    product_name = message.text.strip()
+    if not product_name:
+        await message.reply("상품명이 비어 있습니다. 다시 /clear_phones_product 를 입력해주세요.")
+        dp.unregister_message_handler(process_clear_phones_product)
+        return
+
+    clear_product_phones(product_name)
+    await message.reply(f"'{product_name}' 상품의 당첨자 전화번호가 모두 삭제되었습니다.")
+    dp.unregister_message_handler(process_clear_phones_product)
+
+
 # ---------- 당첨자 전화번호 제출 ----------
 
 
@@ -425,7 +477,7 @@ async def cmd_submit_winner(message: types.Message):
 
     text = (
         "상품 발송을 위해 휴대폰 번호를 수집합니다.\n"
-        "입력하신 정보는 상품 발송 후 즉시 폐기됩니다.\n\n"
+        "입력하신 정보는 상품 발송 후 관리자 명령어를 통해 즉시 삭제할 수 있습니다.\n\n"
         "동의하시면 아래 형식으로 휴대폰 번호를 입력해주세요.\n"
         "<code>010-1234-5678</code>"
     )
@@ -452,8 +504,8 @@ async def handle_phone_input(message: types.Message):
     update_phone_for_handle(handle, phone)
 
     await message.reply(
-        "전화번호가 정상적으로 등록되었습니다.\n"
-        "상품은 문자로 됩니다. 좋은 하루 되세요 :)"
+        "전화번호가 정상적으로 등록되었습니다.✅\n"
+        "상품 발송이 완료된 후 모든 개인정보는 일괄 삭제됩니다. 문자 메시지를 확인해주세요."
     )
 
 
