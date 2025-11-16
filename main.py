@@ -324,7 +324,7 @@ async def cmd_submit_winner(message: types.Message):
     # 이 핸들이 winners 테이블에 존재하는지(어떤 상품이든) 확인
     if not winner_exists_handle(handle):
         await message.answer(
-            "당첨자 명단에서 당신의 텔레그램 핸들을 찾을 수 없습니다.\n"
+            "당첨자 명단에서 텔레그램 핸들을 찾을 수 없습니다.\n"
             "이벤트 공지의 당첨자 리스트를 다시 확인해 주세요."
         )
         return
@@ -461,7 +461,7 @@ async def handle_text(message: types.Message):
         await message.answer(
             "전화번호가 정상적으로 제출되었습니다. ✅\n"
             "상품 발송이 완료되면, 제출해 주신 전화번호는 즉시 삭제됩니다.\n"
-            "참여해 주셔서 감사합니다!"
+            "좋은 하루 되세요:)"
         )
         user_states.pop(message.from_user.id, None)
         return
