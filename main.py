@@ -171,9 +171,19 @@ pending_phone_users = {}
 # 관리자 상태: user_id -> dict(type=..., step=..., data=...)
 admin_states = {}
 
+# 봇 전체 ON/OFF 상태 (True = 동작, False = 유저 메시지 무시)
+BOT_ACTIVE = True
+
 
 def is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
+
+
+def is_user_blocked(uid: int) -> bool:
+    """
+    봇이 OFF 상태이고, 그리고 관리자가 아닌 경우 → True (메시지 처리 막기)
+    """
+    return (not BOT_ACTIVE) and (uid not in ADMIN_IDS)
 
 
 # --------------------
@@ -181,11 +191,18 @@ def is_admin(uid: int) -> bool:
 # --------------------
 @dp.message_handler(commands=["start"])
 async def start_cmd(message: types.Message):
+    if is_user_blocked(message.from_user.id):
+        # 필요하면 안내 메시지를 보내도 됨
+        # await message.reply("현재 봇이 일시 중지된 상태입니다.")
+        return
+
     await message.reply("봇이 정상적으로 작동 중입니다.\n/help 로 명령어를 확인하세요.")
 
 
 @dp.message_handler(commands=["help"])
 async def help_cmd(message: types.Message):
+    uid = message.from_user.id
+
     USER_HELP = (
         "/start - 봇 상태 확인\n"
         "/form - 구글 폼 링크 안내\n"
@@ -201,19 +218,27 @@ async def help_cmd(message: types.Message):
         "/show_winners - 상세 당첨자+전화번호 조회\n"
         "/clear_phones_product - 특정 상품 전화번호만 삭제\n"
         "/clear_phones_all - 전체 전화번호 삭제\n"
+        "/bot_on - 봇 동작 재개\n"
+        "/bot_off - 봇 동작 일시 중지\n"
+        "/bot_status - 봇 상태 확인\n"
     )
 
-    text = USER_HELP + (ADMIN_HELP if is_admin(message.from_user.id) else "")
+    text = USER_HELP + (ADMIN_HELP if is_admin(uid) else "")
     await message.reply(text)
 
 
 @dp.message_handler(commands=["form"])
 async def form_cmd(message: types.Message):
+    if is_user_blocked(message.from_user.id):
+        return
     await message.reply(f"폼 링크:\n{FORM_URL}")
 
 
 @dp.message_handler(commands=["list_winners"])
 async def list_cmd(message: types.Message):
+    if is_user_blocked(message.from_user.id):
+        return
+
     grouped = get_winners_grouped()
     if not grouped:
         await message.reply("등록된 당첨자가 없습니다.")
@@ -240,6 +265,9 @@ def is_valid_phone(text: str) -> bool:
 
 @dp.message_handler(commands=["submit_winner"])
 async def submit_cmd(message: types.Message):
+    if is_user_blocked(message.from_user.id):
+        return
+
     user = message.from_user
     if not user.username:
         await message.reply("유저네임(@username)이 필요합니다.\n텔레그램 설정에서 유저네임을 먼저 설정해주세요.")
@@ -255,7 +283,42 @@ async def submit_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자 명령어 (상태 기반)
+# 관리자: 봇 ON/OFF/STATUS
+# --------------------
+@dp.message_handler(commands=["bot_off"])
+async def bot_off_cmd(message: types.Message):
+    global BOT_ACTIVE
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    BOT_ACTIVE = False
+    await message.reply("📴 봇 동작이 일시 중지되었습니다.\n(관리자 명령어는 계속 사용 가능합니다.)")
+
+
+@dp.message_handler(commands=["bot_on"])
+async def bot_on_cmd(message: types.Message):
+    global BOT_ACTIVE
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    BOT_ACTIVE = True
+    await message.reply("🟢 봇 동작이 다시 활성화되었습니다.")
+
+
+@dp.message_handler(commands=["bot_status"])
+async def bot_status_cmd(message: types.Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    status = "ON (동작 중)" if BOT_ACTIVE else "OFF (일시 중지)"
+    await message.reply(f"현재 봇 상태: {status}")
+
+
+# --------------------
+# 관리자 명령어 (상태 기반 플로우)
 # --------------------
 @dp.message_handler(commands=["add_winner"])
 async def add_winner_cmd(message: types.Message):
@@ -348,6 +411,10 @@ async def clear_phones_product_cmd(message: types.Message):
 async def text_handler(message: types.Message):
     uid = message.from_user.id
     text = message.text.strip()
+
+    # 봇이 OFF 상태면, 관리자만 계속 처리
+    if is_user_blocked(uid):
+        return
 
     # 1) 전화번호 입력 대기 상태인 경우
     if uid in pending_phone_users:
