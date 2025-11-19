@@ -298,7 +298,8 @@ async def submit_cmd(message: types.Message):
         return
 
     pending_phone_users[user.id] = row[2]  # handle
-    await message.reply("전화번호를 입력해주세요.\n예: 010-1234-5678")
+    await message.reply("축하드립니다! 상품 전달을 위해 휴대폰 번호 제출에 동의하시는 경우 번호를 입력해주세요. 제출된 개인정보는 상품 발송 목적 외에는 사용되지 않으며, 발송 완료 후 즉시 삭제됩니다.
+\n예: 010-1234-5678")
 
 
 # --------------------
