@@ -4,18 +4,14 @@ import re
 from contextlib import closing
 from collections import defaultdict
 
-from dotenv import load_dotenv  # ✅ .env 로더 추가
+from dotenv import load_dotenv  # ← .env 로더 추가
+load_dotenv()                   # ← .env 파일 읽기
 
 import psycopg2
 from psycopg2.extras import DictCursor
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-
-# --------------------
-# .env 로드
-# --------------------
-load_dotenv()  # ✅ .env 파일(.env)에 있는 값들을 환경 변수로 불러오기
 
 # --------------------
 # 환경 변수
