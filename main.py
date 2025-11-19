@@ -4,11 +4,18 @@ import re
 from contextlib import closing
 from collections import defaultdict
 
+from dotenv import load_dotenv  # ✅ .env 로더 추가
+
 import psycopg2
 from psycopg2.extras import DictCursor
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
+
+# --------------------
+# .env 로드
+# --------------------
+load_dotenv()  # ✅ .env 파일(.env)에 있는 값들을 환경 변수로 불러오기
 
 # --------------------
 # 환경 변수
@@ -46,7 +53,8 @@ def get_conn():
 
 def init_db():
     with closing(get_conn()) as conn, conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS winners (
                 id SERIAL PRIMARY KEY,
                 product_name TEXT NOT NULL,
@@ -54,11 +62,14 @@ def init_db():
                 phone_number TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
-        """)
-        cur.execute("""
+        """
+        )
+        cur.execute(
+            """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_winners_product_handle
             ON winners (product_name, handle);
-        """)
+        """
+        )
 
 
 def add_winners(product_name, handles):
@@ -71,11 +82,14 @@ def add_winners(product_name, handles):
                 continue
             if not handle.startswith("@"):
                 handle = "@" + handle
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO winners (product_name, handle)
                 VALUES (%s, %s)
                 ON CONFLICT (product_name, handle) DO NOTHING;
-            """, (product_name, handle))
+            """,
+                (product_name, handle),
+            )
 
 
 def delete_product_winners(product_name):
@@ -99,17 +113,19 @@ def clear_product_phones(product_name):
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE winners SET phone_number = NULL WHERE product_name = %s;",
-            (product_name,)
+            (product_name,),
         )
 
 
 def get_winners_grouped():
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT product_name, handle
             FROM winners
             ORDER BY product_name, id;
-        """)
+        """
+        )
         rows = cur.fetchall()
 
     grouped = defaultdict(list)
@@ -124,12 +140,15 @@ def find_pending_handle_for_user(username):
     handle = "@" + username
 
     with closing(get_conn()) as conn, conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, product_name, handle
             FROM winners
             WHERE handle = %s
             LIMIT 1;
-        """, (handle,))
+        """,
+            (handle,),
+        )
         return cur.fetchone()
 
 
@@ -137,20 +156,25 @@ def update_phone_for_handle(handle, phone_number):
     if not handle.startswith("@"):
         handle = "@" + handle
     with closing(get_conn()) as conn, conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             UPDATE winners
             SET phone_number = %s
             WHERE handle = %s;
-        """, (phone_number, handle))
+        """,
+            (phone_number, handle),
+        )
 
 
 def get_winners_with_phones():
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute("""
+        cur.execute(
+            """
             SELECT product_name, handle, phone_number
             FROM winners
             ORDER BY product_name, id;
-        """)
+        """
+        )
         rows = cur.fetchall()
 
     grouped = defaultdict(list)
@@ -192,10 +216,7 @@ def is_user_blocked(uid: int) -> bool:
 @dp.message_handler(commands=["start"])
 async def start_cmd(message: types.Message):
     if is_user_blocked(message.from_user.id):
-        # 필요하면 안내 메시지를 보내도 됨
-        # await message.reply("현재 봇이 일시 중지된 상태입니다.")
         return
-
     await message.reply("봇이 정상적으로 작동 중입니다.\n/help 로 명령어를 확인하세요.")
 
 
@@ -270,7 +291,9 @@ async def submit_cmd(message: types.Message):
 
     user = message.from_user
     if not user.username:
-        await message.reply("유저네임(@username)이 필요합니다.\n텔레그램 설정에서 유저네임을 먼저 설정해주세요.")
+        await message.reply(
+            "유저네임(@username)이 필요합니다.\n텔레그램 설정에서 유저네임을 먼저 설정해주세요."
+        )
         return
 
     row = find_pending_handle_for_user(user.username)
@@ -440,7 +463,6 @@ async def text_handler(message: types.Message):
     # add_winner 플로우
     if stype == "add_winner":
         if step == "product_name":
-            # 상품명 입력 받은 단계
             state["product_name"] = text
             state["step"] = "handles"
             await message.reply(
