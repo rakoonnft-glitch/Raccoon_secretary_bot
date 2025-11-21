@@ -17,7 +17,7 @@ from psycopg2 import IntegrityError
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
-from aiogram.dispatcher.filters import Command # Command 필터 사용을 위해 추가
+from aiogram.dispatcher.filters import Command  # Command 필터 사용을 위해 추가
 
 # --------------------
 # 환경 변수
@@ -27,7 +27,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 FORM_URL = os.getenv("FORM_URL", "https://forms.gle/your-form-url")
 
 # 환경 변수에서 관리자 ID를 가져오던 기존 로직은 DB 로직으로 대체됨
-ADMIN_IDS = [] 
+ADMIN_IDS = []
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN not set")
@@ -82,7 +82,7 @@ def init_db():
             ON winners (product_name, handle);
             """
         )
-        
+
         # admins 테이블 (관리자 ID 관리)
         cur.execute(
             """
@@ -121,7 +121,7 @@ def init_db():
             );
             """
         )
-        
+
         # admin_config 테이블 (관리자별 설정 저장)
         cur.execute(
             """
@@ -195,6 +195,7 @@ def update_phone_for_handle(handle, phone_number):
             """,
             (phone_number, handle),
         )
+
 
 def change_product_name_for_handle(handle, new_product_name):
     """특정 핸들의 상품명을 변경합니다."""
@@ -341,15 +342,18 @@ def add_admin_to_db(user_id: int, username: str):
         except Exception as e:
             logger.error(f"관리자 추가 오류: {e}")
 
+
 def delete_admin_from_db(user_id: int):
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM admins WHERE user_id = %s;", (user_id,))
         load_admin_ids()
 
+
 def get_all_admin_ids():
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute("SELECT user_id, username FROM admins ORDER BY added_at;")
         return cur.fetchall()
+
 
 # --- 관리자 설정 (필수 그룹) 관리 함수 ---
 
@@ -362,18 +366,20 @@ def set_admin_required_groups(user_id: int, groups_str: str):
             VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET required_groups = EXCLUDED.required_groups;
             """,
-            (user_id, groups_str)
+            (user_id, groups_str),
         )
+
 
 def get_admin_required_groups(user_id: int) -> str:
     """관리자의 기본 필수 그룹 설정을 불러옵니다."""
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT required_groups FROM admin_config WHERE user_id = %s;",
-            (user_id,)
+            (user_id,),
         )
         result = cur.fetchone()
         return result[0] if result and result[0] else ""
+
 
 # --- 추첨 관련 DB 함수 ---
 
@@ -382,7 +388,7 @@ def get_current_lottery(chat_id: int):
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
             "SELECT * FROM lotteries WHERE chat_id = %s AND state = 'ACTIVE';",
-            (chat_id,)
+            (chat_id,),
         )
         return cur.fetchone()
 
@@ -398,7 +404,7 @@ def start_new_lottery(chat_id: int, duration: int, winner_count: int, required_g
             INSERT INTO lotteries (chat_id, duration_minutes, winner_count, required_groups, message_id)
             VALUES (%s, %s, %s, %s, %s);
             """,
-            (chat_id, duration, winner_count, required_groups, message_id)
+            (chat_id, duration, winner_count, required_groups, message_id),
         )
         return True
 
@@ -408,7 +414,7 @@ def end_lottery(chat_id: int):
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE lotteries SET state = 'ENDED' WHERE chat_id = %s AND state = 'ACTIVE';",
-            (chat_id,)
+            (chat_id,),
         )
 
 
@@ -421,7 +427,7 @@ def add_participant(chat_id: int, user_id: int, username: str):
                 INSERT INTO lottery_participants (chat_id, user_id, username)
                 VALUES (%s, %s, %s);
                 """,
-                (chat_id, user_id, username)
+                (chat_id, user_id, username),
             )
             return True
         except IntegrityError:
@@ -433,9 +439,10 @@ def get_participants(chat_id: int):
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
             "SELECT user_id, username FROM lottery_participants WHERE chat_id = %s ORDER BY joined_at;",
-            (chat_id,)
+            (chat_id,),
         )
         return cur.fetchall()
+
 
 def clear_participants(chat_id: int):
     """추첨 참가자 목록을 삭제합니다. (종료 후 정리용)"""
@@ -476,9 +483,9 @@ async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
     그룹 링크 대신 Chat ID (예: -1001234567890)를 사용하는 것이 가장 좋습니다.
     """
     group = group_link_or_id.strip()
-    
+
     if not group:
-        return True # 조건이 없으면 통과
+        return True  # 조건이 없으면 통과
 
     # 1. Chat ID로 확인
     if group.startswith("-100") and group[1:].isdigit():
@@ -486,25 +493,26 @@ async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
     # 2. @username 또는 t.me/username 형태를 그대로 사용 (봇이 해당 채널/그룹에 있어야 함)
     else:
         # T.me 링크에서 username만 추출
-        match = re.search(r't\.me/([a-zA-Z0-9_]+)', group)
+        match = re.search(r"t\.me/([a-zA-Z0-9_]+)", group)
         if match:
             group = "@" + match.group(1)
         elif not group.startswith("@"):
             group = "@" + group
 
-        chat_id = group # 봇 API가 username도 처리할 수 있음
+        chat_id = group  # 봇 API가 username도 처리할 수 있음
 
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         return member.status in [
-            types.ChatMemberStatus.MEMBER, 
-            types.ChatMemberStatus.CREATOR, 
-            types.ChatMemberStatus.ADMINISTRATOR
+            types.ChatMemberStatus.MEMBER,
+            types.ChatMemberStatus.CREATOR,
+            types.ChatMemberStatus.ADMINISTRATOR,
         ]
     except Exception as e:
         # 그룹을 찾을 수 없거나 (400 Bad Request) 봇이 그룹에 없는 경우
         logger.warning(f"그룹 멤버 확인 오류 for {group}: {e}")
         return False
+
 
 # --------------------
 # Commands (일반 사용자)
@@ -621,6 +629,7 @@ async def submit_cmd(message: types.Message):
         "예: 010-1234-5678"
     )
 
+
 # --------------------
 # 관리자: 관리자 명단 관리
 # --------------------
@@ -629,14 +638,14 @@ async def add_admin_cmd(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
         return
-    
+
     args = message.get_args().split()
     if not args or not args[0].isdigit():
         await message.reply("사용법: /add_admin <숫자로 된 유저 ID>")
         return
-    
+
     target_id = int(args[0])
-    
+
     # ID가 실제 유저인지 확인이 어려우므로 일단 DB에 추가
     add_admin_to_db(target_id, f"ID:{target_id}")
     await message.reply(f"✅ 관리자 명단에 ID **{target_id}**를 추가했습니다.")
@@ -647,7 +656,7 @@ async def del_admin_cmd(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
         return
-    
+
     args = message.get_args().split()
     if not args or not args[0].isdigit():
         await message.reply("사용법: /del_admin <숫자로 된 유저 ID>")
@@ -677,8 +686,9 @@ async def list_admins_cmd(message: types.Message):
     text = "👑 현재 등록된 관리자 목록:\n\n"
     for admin in admins:
         text += f"- ID: **{admin['user_id']}** (User: {admin['username']})\n"
-        
+
     await message.reply(text)
+
 
 # --------------------
 # 관리자: 봇 ON/OFF/STATUS (기존)
@@ -887,28 +897,32 @@ async def set_groups_cmd(message: types.Message):
     admin_states[uid] = {
         "type": "set_groups",
         "step": "groups_input",
-        "groups": [] # 누적할 그룹 목록
+        "groups": [],  # 누적할 그룹 목록
     }
-    
+
     current_groups = get_admin_required_groups(uid)
-    
+    if current_groups:
+        current_display = current_groups.replace(",", "\n")
+    else:
+        current_display = "없음"
+
     await message.reply(
         "🔗 **필수 그룹 설정 모드**\n"
         "추첨 시 조건으로 설정할 그룹 링크 또는 ID를 한 줄에 하나씩 입력하세요.\n"
         "(예: https://t.me/Kooncrypto 또는 -1001234567890)\n\n"
-        f"**현재 설정:** {current_groups.replace(',', '\n') if current_groups else '없음'}\n\n"
+        f"**현재 설정:** {current_display}\n\n"
         "입력을 완료하려면 `/end`를 보내거나 `/cancel`을 보내 취소하세요."
     )
+
 
 # --------------------
 # 관리자: 추첨 기능
 # --------------------
-
 @dp.message_handler(commands=["lottery"])
 async def lottery_start_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
-    
+
     if not is_admin(uid) or message.chat.type not in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
         return
 
@@ -920,29 +934,29 @@ async def lottery_start_cmd(message: types.Message):
     args = message.get_args().split()
     duration_min = 0
     winner_count = 1
-    
+
     if args and args[0].isdigit():
         duration_min = int(args[0])
-        
+
     if len(args) > 1 and args[1].isdigit():
         winner_count = int(args[1])
 
     # DM에서 설정된 필수 그룹 목록 가져오기
     required_groups = get_admin_required_groups(uid)
-        
+
     if not required_groups:
         await message.reply(
             "⚠️ **필수 그룹 설정 누락.** DM에서 `/set_groups` 명령어로 먼저 필수 그룹 목록을 설정해주세요."
         )
         return
-        
+
     # DB에 추첨 정보 기록
     start_success = start_new_lottery(
-        chat_id=chat_id, 
-        duration=duration_min, 
-        winner_count=winner_count, 
+        chat_id=chat_id,
+        duration=duration_min,
+        winner_count=winner_count,
         required_groups=required_groups,
-        message_id=message.message_id # 임시 메시지 ID
+        message_id=message.message_id,  # 임시 메시지 ID
     )
 
     if not start_success:
@@ -960,7 +974,7 @@ async def lottery_start_cmd(message: types.Message):
     if winner_count > 0:
         winner_text = f"\n🎁 **총 {winner_count}명** 당첨 예정"
 
-    group_list = "\n".join([f"- {g.strip()}" for g in required_groups.split(',')])
+    group_list = "\n".join([f"- {g.strip()}" for g in required_groups.split(",")])
     group_text = f"\n\n🚨 **참여 조건:** 다음 그룹에 **모두 입장**해야 합니다.\n{group_list}"
 
     final_text = (
@@ -975,7 +989,7 @@ async def lottery_start_cmd(message: types.Message):
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE lotteries SET message_id = %s WHERE chat_id = %s;",
-            (sent_message.message_id, chat_id)
+            (sent_message.message_id, chat_id),
         )
 
 
@@ -983,7 +997,7 @@ async def lottery_start_cmd(message: types.Message):
 async def lottery_end_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
-    
+
     if not is_admin(uid) or message.chat.type not in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
         return
 
@@ -993,12 +1007,12 @@ async def lottery_end_cmd(message: types.Message):
         return
 
     args = message.get_args().split()
-    winner_count = lottery['winner_count']
+    winner_count = lottery["winner_count"]
     if args and args[0].isdigit():
         winner_count = int(args[0])
 
     participants = get_participants(chat_id)
-    
+
     if not participants:
         await message.reply("😥 참가자가 없습니다. 추첨을 종료합니다.")
         end_lottery(chat_id)
@@ -1010,12 +1024,12 @@ async def lottery_end_cmd(message: types.Message):
 
     # 추첨 로직
     winners = random.sample(participants, winner_count)
-    winner_handles = [f"@{w['username']}" if w['username'] else f"ID:{w['user_id']}" for w in winners]
-    
+    winner_handles = [f"@{w['username']}" if w["username"] else f"ID:{w['user_id']}" for w in winners]
+
     # DB 종료 처리
     end_lottery(chat_id)
     clear_participants(chat_id)
-    
+
     # 결과 메시지
     result_text = (
         "🎉 **추첨 종료! 당첨자를 발표합니다!** 🎉\n\n"
@@ -1027,13 +1041,13 @@ async def lottery_end_cmd(message: types.Message):
         result_text += f"- {handle}\n"
 
     result_text += "\n✅ 당첨자께서는 개인 DM으로 `/submit_winner` 명령을 사용해주세요!"
-    
+
     await message.reply(result_text)
+
 
 # --------------------
 # 일반 사용자: 추첨 참가 (/join)
 # --------------------
-
 @dp.message_handler(commands=["join"])
 async def lottery_join_cmd(message: types.Message):
     user = message.from_user
@@ -1046,26 +1060,25 @@ async def lottery_join_cmd(message: types.Message):
     if not lottery:
         await message.reply("⚠️ 현재 이 채팅방에서 진행 중인 추첨이 없습니다.")
         return
-        
+
     if not user.username:
-         await message.reply("⚠️ 참여하려면 **텔레그램 유저네임(@username)**을 설정해야 합니다.")
-         return
+        await message.reply("⚠️ 참여하려면 **텔레그램 유저네임(@username)**을 설정해야 합니다.")
+        return
 
     # 그룹 가입 조건 확인
-    required_groups = [g.strip() for g in lottery['required_groups'].split(',') if g.strip()]
+    required_groups = [g.strip() for g in lottery["required_groups"].split(",") if g.strip()]
     is_qualified = True
-    
+
     # 모든 필수 그룹에 가입했는지 확인
     for group in required_groups:
         if not await is_user_member_of_group(user.id, group):
             is_qualified = False
             break
-            
+
     if not is_qualified:
         await message.reply("⚠️ **참여 조건 미달:** 모든 필수 그룹에 가입해야 참여할 수 있습니다. 먼저 가입해주세요.")
         return
 
-    
     # 참가자 추가
     join_success = add_participant(chat_id, user.id, user.username)
 
@@ -1203,12 +1216,12 @@ async def text_handler(message: types.Message):
         elif step == "new_product_name":
             handle = state["handle"]
             new_product_name = text
-            
+
             result = change_product_name_for_handle(handle, new_product_name)
             admin_states.pop(uid, None)
 
             if result is False:
-                 await message.reply(
+                await message.reply(
                     f"⚠️ 오류: 당첨자 '{handle}'은(는) 이미 '{new_product_name}' 상품에 등록되어 있거나 핸들을 찾을 수 없습니다."
                 )
             elif result is True:
@@ -1223,39 +1236,37 @@ async def text_handler(message: types.Message):
 
     # set_groups 플로우
     elif stype == "set_groups" and step == "groups_input":
-        
+
         # 이전 입력값 포함하여 현재 입력된 그룹 목록에 추가
         if text != "/end":
             new_groups = [line.strip() for line in text.splitlines() if line.strip()]
             state["groups"].extend(new_groups)
 
-        if text.lower() == "/end" or message.text.startswith('/'):
+        if text.lower() == "/end" or message.text.startswith("/"):
             groups_str = ",".join(state["groups"])
-            
+
             if not groups_str:
                 await message.reply("❌ 필수 그룹 목록이 비어 있습니다. 취소하려면 /cancel을 사용하세요.")
                 return
 
             set_admin_required_groups(uid, groups_str)
             admin_states.pop(uid, None)
-            
-            # ⭐️ 문법 오류 수정 부분: f-string 내부에서 줄바꿈(\n) 처리를 분리합니다.
-            # 기존 오류 코드: await message.reply(f"✅ 필수 그룹이 다음으로 설정되었습니다:\n{groups_str.replace(',', '\n')}")
+
             await message.reply(
-                "✅ 필수 그룹이 다음으로 설정되었습니다:\n" + 
-                groups_str.replace(',', '\n')
+                "✅ 필수 그룹이 다음으로 설정되었습니다:\n"
+                + groups_str.replace(",", "\n")
             )
             return
-        
+
         await message.reply("계속 입력하거나, 완료하려면 `/end`를 보내주세요.")
         return
 
     # 그 외는 상태 초기화 (다른 명령어가 아닌 경우)
-    if text.startswith('/') and text not in ["/start", "/form", "/list_winners", "/submit_winner", "/join"]:
+    if text.startswith("/") and text not in ["/start", "/form", "/list_winners", "/submit_winner", "/join"]:
         admin_states.pop(uid, None)
-        
-    elif not text.startswith('/'):
-         # 상태가 없는 일반 텍스트는 무시
+
+    elif not text.startswith("/"):
+        # 상태가 없는 일반 텍스트는 무시
         return
 
 
