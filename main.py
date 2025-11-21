@@ -1238,7 +1238,13 @@ async def text_handler(message: types.Message):
 
             set_admin_required_groups(uid, groups_str)
             admin_states.pop(uid, None)
-            await message.reply(f"✅ 필수 그룹이 다음으로 설정되었습니다:\n{groups_str.replace(',', '\n')}")
+            
+            # ⭐️ 문법 오류 수정 부분: f-string 내부에서 줄바꿈(\n) 처리를 분리합니다.
+            # 기존 오류 코드: await message.reply(f"✅ 필수 그룹이 다음으로 설정되었습니다:\n{groups_str.replace(',', '\n')}")
+            await message.reply(
+                "✅ 필수 그룹이 다음으로 설정되었습니다:\n" + 
+                groups_str.replace(',', '\n')
+            )
             return
         
         await message.reply("계속 입력하거나, 완료하려면 `/end`를 보내주세요.")
