@@ -953,11 +953,22 @@ async def lottery_start_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
 
-    if not is_admin(uid) or message.chat.type not in [
-        types.ChatType.GROUP,
-        types.ChatType.SUPERGROUP,
-    ]:
+    # 디버그 로그: /lottery가 들어오는지, 어떤 환경인지 확인
+    logger.info(
+        f"/lottery called: uid={uid}, chat_id={chat_id}, "
+        f"chat_type={message.chat.type}, is_admin={is_admin(uid)}"
+    )
+
+    # 1) 관리자 아닌 경우
+    if not is_admin(uid):
+        await message.reply("⚠️ 이 명령어는 관리자만 사용할 수 있습니다.")
         return
+
+    # 2) DM/채널 등에서 호출한 경우
+    if message.chat.type not in (types.ChatType.GROUP, types.ChatType.SUPERGROUP):
+        await message.reply("⚠️ /lottery 는 그룹/슈퍼그룹 채팅에서만 사용할 수 있습니다.")
+        return
+
 
     # 이미 진행 중인 추첨 확인
     if get_current_lottery(chat_id):
