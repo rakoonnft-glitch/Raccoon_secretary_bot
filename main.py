@@ -1,13 +1,13 @@
 import os
 import logging
 import re
+import io
+import csv
 from contextlib import closing
 from collections import defaultdict
-import csv
-import tempfile
 
-from dotenv import load_dotenv  # ← .env 로더
-load_dotenv()                   # ← .env 파일 읽기
+from dotenv import load_dotenv
+load_dotenv()
 
 import psycopg2
 from psycopg2.extras import DictCursor
@@ -116,10 +116,7 @@ def clear_product_phones(product_name):
 
 
 def get_winners_grouped():
-    """
-    전화번호 여부 상관 없이
-    상품별로 핸들 목록을 묶어서 반환.
-    """
+    """전화번호 여부 상관없이 전체 (list_winners용)"""
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
             """
@@ -134,6 +131,75 @@ def get_winners_grouped():
     for row in rows:
         grouped[row["product_name"]].append(row["handle"])
     return grouped
+
+
+def get_winners_with_phones_grouped():
+    """전화번호 여부 포함 전체 (show_winners용)"""
+    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT product_name, handle, phone_number
+            FROM winners
+            ORDER BY product_name, id;
+            """
+        )
+        rows = cur.fetchall()
+
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["product_name"]].append((row["handle"], row["phone_number"]))
+    return grouped
+
+
+def get_winners_with_phone_only():
+    """전화번호를 제출한 사람만"""
+    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT product_name, handle, phone_number
+            FROM winners
+            WHERE phone_number IS NOT NULL
+            ORDER BY product_name, id;
+            """
+        )
+        rows = cur.fetchall()
+
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["product_name"]].append((row["handle"], row["phone_number"]))
+    return grouped
+
+
+def get_winners_without_phone_only():
+    """전화번호를 아직 제출하지 않은 사람만"""
+    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT product_name, handle
+            FROM winners
+            WHERE phone_number IS NULL
+            ORDER BY product_name, id;
+            """
+        )
+        rows = cur.fetchall()
+
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["product_name"]].append(row["handle"])
+    return grouped
+
+
+def get_all_rows_for_export():
+    """CSV 내보내기용 전체 데이터"""
+    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
+        cur.execute(
+            """
+            SELECT id, product_name, handle, phone_number, created_at
+            FROM winners
+            ORDER BY product_name, id;
+            """
+        )
+        return cur.fetchall()
 
 
 def find_pending_handle_for_user(username):
@@ -166,84 +232,6 @@ def update_phone_for_handle(handle, phone_number):
             """,
             (phone_number, handle),
         )
-
-
-def get_winners_with_phones():
-    """
-    기존 함수: 전화번호 포함/미포함 상관 없이
-    상품별로 (handle, phone_number) 리스트 반환.
-    """
-    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            """
-            SELECT product_name, handle, phone_number
-            FROM winners
-            ORDER BY product_name, id;
-            """
-        )
-        rows = cur.fetchall()
-
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[row["product_name"]].append((row["handle"], row["phone_number"]))
-    return grouped
-
-
-def get_winners_only_with_phone():
-    """
-    phone_number가 채워진 사람만 상품별로 묶어서 반환.
-    """
-    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            """
-            SELECT product_name, handle, phone_number
-            FROM winners
-            WHERE phone_number IS NOT NULL AND phone_number <> ''
-            ORDER BY product_name, id;
-            """
-        )
-        rows = cur.fetchall()
-
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[row["product_name"]].append((row["handle"], row["phone_number"]))
-    return grouped
-
-
-def get_winners_without_phone():
-    """
-    phone_number가 비어 있는 사람만 상품별로 묶어서 반환.
-    """
-    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            """
-            SELECT product_name, handle
-            FROM winners
-            WHERE phone_number IS NULL OR phone_number = ''
-            ORDER BY product_name, id;
-            """
-        )
-        rows = cur.fetchall()
-
-    grouped = defaultdict(list)
-    for row in rows:
-        grouped[row["product_name"]].append(row["handle"])
-    return grouped
-
-
-def fetch_all_winners_rows():
-    """
-    CSV 내보내기용: 전체 row 리스트 반환.
-    """
-    with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(
-            """
-            SELECT product_name, handle, phone_number
-            FROM winners
-            ORDER BY product_name, id;
-            """
-        )
-        return cur.fetchall()
 
 
 # --------------------
@@ -299,12 +287,12 @@ async def help_cmd(message: types.Message):
         "/add_winner - 상품/핸들 등록\n"
         "/delete_product_winners - 상품별 당첨자 전체 삭제\n"
         "/delete_winner - 특정 핸들 삭제\n"
-        "/show_winners - 전체 당첨자+전화번호 조회\n"
-        "/show_winners_with_phone - 전화번호 입력 완료자만 조회\n"
-        "/show_winners_without_phone - 아직 번호 안 낸 사람만 조회\n"
+        "/show_winners - 전체 상세(전화번호 포함)\n"
+        "/show_winners_with_phone - 전화번호 제출자만 보기\n"
+        "/show_winners_without_phone - 전화번호 미제출자만 보기\n"
         "/clear_phones_product - 특정 상품 전화번호만 삭제\n"
         "/clear_phones_all - 전체 전화번호 삭제\n"
-        "/export_winners - 전체 당첨자 정보를 CSV 파일로 받기\n"
+        "/export_winners - 전체 데이터를 winners_export.csv 로 받기\n"
         "/bot_on - 봇 동작 재개\n"
         "/bot_off - 봇 동작 일시 중지\n"
         "/bot_status - 봇 상태 확인\n"
@@ -411,7 +399,74 @@ async def bot_status_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자 명령어 (조회/정리)
+# 관리자: 조회 계열
+# --------------------
+@dp.message_handler(commands=["show_winners"])
+async def show_winners_cmd(message: types.Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    grouped = get_winners_with_phones_grouped()
+    if not grouped:
+        await message.reply("데이터 없음.")
+        return
+
+    text = "📦 상세 당첨자 목록 (전체)\n\n"
+    for prod, items in grouped.items():
+        text += f"{prod}:\n"
+        for handle, phone in items:
+            phone_display = phone if phone else "전화번호 없음"
+            text += f"- {handle} / {phone_display}\n"
+        text += "\n"
+
+    await message.reply(text)
+
+
+@dp.message_handler(commands=["show_winners_with_phone"])
+async def show_winners_with_phone_cmd(message: types.Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    grouped = get_winners_with_phone_only()
+    if not grouped:
+        await message.reply("전화번호를 제출한 사용자가 없습니다.")
+        return
+
+    text = "✅ 전화번호 제출 완료자 목록\n\n"
+    for prod, items in grouped.items():
+        text += f"{prod}:\n"
+        for handle, phone in items:
+            text += f"- {handle} / {phone}\n"
+        text += "\n"
+
+    await message.reply(text)
+
+
+@dp.message_handler(commands=["show_winners_without_phone"])
+async def show_winners_without_phone_cmd(message: types.Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    grouped = get_winners_without_phone_only()
+    if not grouped:
+        await message.reply("전화번호를 아직 제출하지 않은 사용자가 없습니다.")
+        return
+
+    text = "⏳ 전화번호 미제출자 목록\n\n"
+    for prod, handles in grouped.items():
+        text += f"{prod}:\n"
+        for h in handles:
+            text += f"- {h}\n"
+        text += "\n"
+
+    await message.reply(text)
+
+
+# --------------------
+# 관리자: CRUD 계열
 # --------------------
 @dp.message_handler(commands=["add_winner"])
 async def add_winner_cmd(message: types.Message):
@@ -453,79 +508,6 @@ async def delete_winner_cmd(message: types.Message):
     await message.reply("삭제할 핸들을 입력하세요. (예: @username)")
 
 
-@dp.message_handler(commands=["show_winners"])
-async def show_winners_cmd(message: types.Message):
-    """
-    전체 당첨자 + 전화번호(있으면) 출력
-    """
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-
-    grouped = get_winners_with_phones()
-    if not grouped:
-        await message.reply("데이터 없음.")
-        return
-
-    text = "📦 상세 당첨자 목록 (전체)\n\n"
-    for prod, items in grouped.items():
-        text += f"{prod}:\n"
-        for handle, phone in items:
-            phone_display = phone if phone else "전화번호 없음"
-            text += f"- {handle} / {phone_display}\n"
-        text += "\n"
-
-    await message.reply(text)
-
-
-@dp.message_handler(commands=["show_winners_with_phone"])
-async def show_winners_with_phone_cmd(message: types.Message):
-    """
-    전화번호 입력 완료자만 출력
-    """
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-
-    grouped = get_winners_only_with_phone()
-    if not grouped:
-        await message.reply("전화번호를 입력한 당첨자가 아직 없습니다.")
-        return
-
-    text = "📱 전화번호 입력 완료자 목록\n\n"
-    for prod, items in grouped.items():
-        text += f"{prod}:\n"
-        for handle, phone in items:
-            text += f"- {handle} / {phone}\n"
-        text += "\n"
-
-    await message.reply(text)
-
-
-@dp.message_handler(commands=["show_winners_without_phone"])
-async def show_winners_without_phone_cmd(message: types.Message):
-    """
-    아직 전화번호를 제출하지 않은 사람들만 출력
-    """
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-
-    grouped = get_winners_without_phone()
-    if not grouped:
-        await message.reply("전화번호를 제출하지 않은 당첨자가 없습니다.")
-        return
-
-    text = "❗ 아직 전화번호 미제출 당첨자 목록\n\n"
-    for prod, handles in grouped.items():
-        text += f"{prod}:\n"
-        for h in handles:
-            text += f"- {h}\n"
-        text += "\n"
-
-    await message.reply(text)
-
-
 @dp.message_handler(commands=["clear_phones_all"])
 async def clear_all_cmd(message: types.Message):
     uid = message.from_user.id
@@ -548,47 +530,40 @@ async def clear_phones_product_cmd(message: types.Message):
     await message.reply("전화번호를 삭제할 상품명을 입력하세요.")
 
 
+# --------------------
+# 관리자: CSV 내보내기
+# --------------------
 @dp.message_handler(commands=["export_winners"])
 async def export_winners_cmd(message: types.Message):
-    """
-    전체 당첨자 데이터를 CSV 파일로 내보내기
-    (컬럼: product_name, handle, phone_number)
-    """
     uid = message.from_user.id
     if not is_admin(uid):
         return
 
-    rows = fetch_all_winners_rows()
+    rows = get_all_rows_for_export()
     if not rows:
         await message.reply("내보낼 데이터가 없습니다.")
         return
 
-    # 임시 CSV 파일 생성
-    with tempfile.NamedTemporaryFile(
-        "w", newline="", delete=False, encoding="utf-8"
-    ) as tmp:
-        writer = csv.writer(tmp)
-        writer.writerow(["product_name", "handle", "phone_number"])
-        for row in rows:
-            writer.writerow(
-                [
-                    row["product_name"],
-                    row["handle"],
-                    row["phone_number"] or "",
-                ]
-            )
-        tmp_path = tmp.name
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "product_name", "handle", "phone_number", "created_at"])
 
-    # 텔레그램으로 파일 전송
-    try:
-        with open(tmp_path, "rb") as f:
-            await message.reply_document(f, filename="winners_export.csv")
-    finally:
-        # 파일 정리
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+    for row in rows:
+        writer.writerow(
+            [
+                row["id"],
+                row["product_name"],
+                row["handle"],
+                row["phone_number"] or "",
+                row["created_at"],
+            ]
+        )
+
+    csv_data = output.getvalue().encode("utf-8-sig")
+    bio = io.BytesIO(csv_data)
+    bio.name = "winners_export.csv"
+
+    await message.reply_document(types.InputFile(bio), caption="전체 당첨자 CSV 내보내기")
 
 
 # --------------------
