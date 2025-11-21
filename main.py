@@ -26,8 +26,17 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 FORM_URL = os.getenv("FORM_URL", "https://forms.gle/your-form-url")
 
-# 환경 변수에서 관리자 ID를 가져오던 기존 로직은 DB 로직으로 대체됨
+# DB 기반 관리자 ID 목록
 ADMIN_IDS = []
+
+# ENV 기반 관리자 ID 목록 (콤마 구분 숫자 목록)
+ENV_ADMIN_IDS = set()
+_raw_env_admins = os.getenv("ADMIN_IDS")
+if _raw_env_admins:
+    for part in _raw_env_admins.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ENV_ADMIN_IDS.add(int(part))
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN not set")
@@ -57,7 +66,8 @@ def load_admin_ids():
         with closing(get_conn()) as conn, conn.cursor() as cur:
             cur.execute("SELECT user_id FROM admins;")
             ADMIN_IDS.extend([row[0] for row in cur.fetchall()])
-            logger.info(f"관리자 ID 로드 완료: {ADMIN_IDS}")
+            logger.info(f"관리자 ID 로드 완료(DB): {ADMIN_IDS}")
+            logger.info(f"환경변수 관리자 ID(ENV): {list(ENV_ADMIN_IDS)}")
     except Exception as e:
         logger.error(f"관리자 ID 로드 중 오류 발생: {e}")
 
@@ -335,7 +345,8 @@ def add_admin_to_db(user_id: int, username: str):
     with closing(get_conn()) as conn, conn.cursor() as cur:
         try:
             cur.execute(
-                "INSERT INTO admins (user_id, username) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING;",
+                "INSERT INTO admins (user_id, username) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO NOTHING;",
                 (user_id, username),
             )
             load_admin_ids()
@@ -393,7 +404,8 @@ def get_current_lottery(chat_id: int):
         return cur.fetchone()
 
 
-def start_new_lottery(chat_id: int, duration: int, winner_count: int, required_groups: str, message_id: int):
+def start_new_lottery(chat_id: int, duration: int, winner_count: int,
+                      required_groups: str, message_id: int):
     """새로운 추첨을 시작합니다. 이미 진행 중인 경우 False를 반환합니다."""
     if get_current_lottery(chat_id):
         return False
@@ -413,7 +425,8 @@ def end_lottery(chat_id: int):
     """추첨을 비활성화 상태로 변경합니다."""
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE lotteries SET state = 'ENDED' WHERE chat_id = %s AND state = 'ACTIVE';",
+            "UPDATE lotteries SET state = 'ENDED' "
+            "WHERE chat_id = %s AND state = 'ACTIVE';",
             (chat_id,),
         )
 
@@ -438,7 +451,8 @@ def get_participants(chat_id: int):
     """현재 추첨의 참가자 목록을 가져옵니다."""
     with closing(get_conn()) as conn, conn.cursor(cursor_factory=DictCursor) as cur:
         cur.execute(
-            "SELECT user_id, username FROM lottery_participants WHERE chat_id = %s ORDER BY joined_at;",
+            "SELECT user_id, username FROM lottery_participants "
+            "WHERE chat_id = %s ORDER BY joined_at;",
             (chat_id,),
         )
         return cur.fetchall()
@@ -467,14 +481,15 @@ BOT_ACTIVE = True
 
 
 def is_admin(uid: int) -> bool:
-    return uid in ADMIN_IDS
+    """DB + ENV(ADMIN_IDS) 두 곳 모두에서 관리자 여부 확인"""
+    return (uid in ADMIN_IDS) or (uid in ENV_ADMIN_IDS)
 
 
 def is_user_blocked(uid: int) -> bool:
     """
     봇이 OFF 상태이고, 그리고 관리자가 아닌 경우 → True (메시지 처리 막기)
     """
-    return (not BOT_ACTIVE) and (uid not in ADMIN_IDS)
+    return (not BOT_ACTIVE) and (uid not in ADMIN_IDS) and (uid not in ENV_ADMIN_IDS)
 
 
 async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
@@ -528,39 +543,57 @@ async def start_cmd(message: types.Message):
 async def help_cmd(message: types.Message):
     uid = message.from_user.id
     is_private = message.chat.type == types.ChatType.PRIVATE
+    is_group = message.chat.type in (types.ChatType.GROUP, types.ChatType.SUPERGROUP)
 
     USER_HELP = (
-        "/start - 봇 상태 확인\n"
-        "/form - 구글 폼 링크 안내\n"
-        "/list_winners - 상품별 당첨자 목록\n"
-        "/submit_winner - 본인 전화번호 제출\n"
-        "/join - 그룹 추첨에 참가\n"
+        "👥 일반 사용자 명령어\n"
+        "/help - 도움말 보기: 사용자용 명령어 목록을 보여줍니다. "
+        "(관리자가 그룹 채팅에서 입력해도 관리자 명령어는 노출되지 않습니다.)\n"
+        "/form - 폼 링크 안내: 환경 변수 FORM_URL에 등록된 외부 폼 링크를 제공합니다.\n"
+        "/list_winners - 당첨자 목록 조회: 상품별로 등록된 당첨자 텔레그램 핸들(@handle) 목록을 보여줍니다.\n"
+        "/submit_winner - 전화번호 제출: 봇에게 개인 DM으로 본인의 휴대폰 번호를 제출합니다. "
+        "텔레그램 유저네임(@username)이 당첨자 명단에 있어야만 사용 가능합니다.\n"
+        "/join - 추첨 참가 (그룹 채팅에서 사용): 그룹 채팅에서 진행 중인 /lottery 에 참가합니다. "
+        "참가 시 관리자가 설정한 필수 그룹 가입 조건을 자동으로 체크합니다.\n"
     )
 
     ADMIN_HELP = (
-        "\n[관리자 전용]\n"
-        "/add_winner - 상품/핸들 등록\n"
-        "/delete_product_winners - 상품별 당첨자 전체 삭제\n"
-        "/delete_winner - 특정 핸들 삭제\n"
-        "/change_product_name - 특정 당첨자의 상품명 변경\n"
-        "/show_winners - 전체 상세(전화번호 포함)\n"
+        "\n🔐 관리자 전용 기능\n"
+        "/set_groups (DM) - 필수 그룹 설정: /lottery 시작 시 참가 조건으로 적용할 "
+        "필수 그룹 링크 또는 Chat ID 목록을 DM으로 등록합니다.\n"
+        "/lottery [분] [수] - 새로운 추첨 시작 (그룹): 현재 그룹에서 추첨 세션을 시작합니다. "
+        "[분](진행 시간)과 [수](당첨자 수)를 선택적으로 지정할 수 있으며, 참가자는 /join 으로 참여합니다.\n"
+        "/lottery_end [수] - 추첨 종료 및 추첨 (그룹): 진행 중인 추첨을 즉시 종료하고, "
+        "참가자 중 당첨자를 랜덤으로 선정합니다. [수]를 생략하면 시작 시 설정된 당첨자 수를 사용합니다.\n"
+        "\n🎯 당첨자/데이터 관리\n"
+        "/add_winner - 당첨자 등록: 상품명과 당첨자 핸들 목록을 단계적으로 입력받아 DB에 추가합니다.\n"
+        "/delete_winner - 특정 핸들 삭제: 특정 당첨자 핸들을 DB에서 삭제합니다.\n"
+        "/delete_product_winners - 상품별 전체 삭제: 특정 상품에 해당하는 모든 당첨자 명단을 삭제합니다.\n"
+        "/change_product_name - 상품명 변경: 특정 핸들의 당첨 상품명을 다른 상품명으로 변경합니다.\n"
+        "/show_winners - 전체 상세 조회: 당첨자 목록과 제출된 전화번호를 모두 포함하여 보여줍니다.\n"
         "/show_winners_with_phone - 전화번호 제출자만 보기\n"
         "/show_winners_without_phone - 전화번호 미제출자만 보기\n"
-        "/clear_phones_product - 특정 상품 전화번호만 삭제\n"
         "/clear_phones_all - 전체 전화번호 삭제\n"
-        "/export_winners - 전체 데이터를 winners_export.csv 로 받기\n"
-        "/add_admin <ID> - 관리자 추가\n"
-        "/del_admin <ID> - 관리자 삭제\n"
+        "/clear_phones_product - 상품별 전화번호 삭제\n"
+        "/export_winners - CSV 내보내기: 전체 당첨자 데이터를 CSV 파일로 다운로드합니다.\n"
+        "\n👑 봇 제어 및 관리자 명단 관리\n"
+        "/add_admin [ID] - 관리자 추가\n"
+        "/del_admin [ID] - 관리자 삭제 (자신은 삭제 불가)\n"
         "/list_admins - 관리자 목록 보기\n"
-        "/set_groups - DM에서 추첨 시 필수 그룹 목록 설정\n"
-        "/lottery [분] [당첨수] - 추첨 시작 (그룹채팅)\n"
-        "/lottery_end [당첨수] - 추첨 종료 및 추첨 (그룹채팅)\n"
+        "/bot_off - 봇 동작 일시 중지 (관리자 명령어는 계속 사용 가능)\n"
         "/bot_on - 봇 동작 재개\n"
-        "/bot_off - 봇 동작 일시 중지\n"
         "/bot_status - 봇 상태 확인\n"
-        "/cancel - 현재 관리자 입력 플로우 취소\n"
+        "/cancel - 현재 진행 중인 관리자 플로우 취소 "
+        "(/add_winner, /set_groups 등 단계형 입력 모드 종료)\n"
     )
 
+    # 그룹 채팅에서는 관리자여도 항상 일반 사용자 도움말만 노출
+    if is_group:
+        text = USER_HELP + "\n(그룹 채팅에서는 관리자 전용 명령어 설명은 숨겨집니다.)"
+        await message.reply(text)
+        return
+
+    # 1:1 DM
     if is_private and is_admin(uid):
         text = USER_HELP + ADMIN_HELP
     else:
@@ -648,7 +681,7 @@ async def add_admin_cmd(message: types.Message):
 
     # ID가 실제 유저인지 확인이 어려우므로 일단 DB에 추가
     add_admin_to_db(target_id, f"ID:{target_id}")
-    await message.reply(f"✅ 관리자 명단에 ID **{target_id}**를 추가했습니다.")
+    await message.reply(f"✅ 관리자 명단에 ID {target_id} 를 추가했습니다.")
 
 
 @dp.message_handler(Command("del_admin", prefixes="/"))
@@ -669,7 +702,7 @@ async def del_admin_cmd(message: types.Message):
         return
 
     delete_admin_from_db(target_id)
-    await message.reply(f"✅ 관리자 명단에서 ID **{target_id}**를 삭제했습니다.")
+    await message.reply(f"✅ 관리자 명단에서 ID {target_id} 를 삭제했습니다.")
 
 
 @dp.message_handler(commands=["list_admins"])
@@ -685,7 +718,7 @@ async def list_admins_cmd(message: types.Message):
 
     text = "👑 현재 등록된 관리자 목록:\n\n"
     for admin in admins:
-        text += f"- ID: **{admin['user_id']}** (User: {admin['username']})\n"
+        text += f"- ID: {admin['user_id']} (User: {admin['username']})\n"
 
     await message.reply(text)
 
@@ -860,7 +893,7 @@ async def change_product_name_cmd(message: types.Message):
         "handle": None,
         "new_product_name": None,
     }
-    await message.reply("상품명을 변경할 **당첨자의 핸들**을 입력하세요. (예: @username)")
+    await message.reply("상품명을 변경할 당첨자의 핸들을 입력하세요. (예: @username)")
 
 
 @dp.message_handler(commands=["clear_phones_all"])
@@ -891,7 +924,7 @@ async def set_groups_cmd(message: types.Message):
     if not is_admin(uid) or message.chat.type != types.ChatType.PRIVATE:
         if not is_admin(uid):
             return
-        await message.reply("⚠️ 이 명령어는 **1:1 DM**에서만 사용 가능합니다.")
+        await message.reply("⚠️ 이 명령어는 1:1 DM 에서만 사용 가능합니다.")
         return
 
     admin_states[uid] = {
@@ -901,17 +934,14 @@ async def set_groups_cmd(message: types.Message):
     }
 
     current_groups = get_admin_required_groups(uid)
-    if current_groups:
-        current_display = current_groups.replace(",", "\n")
-    else:
-        current_display = "없음"
+    current_text = current_groups.replace(",", "\n") if current_groups else "없음"
 
     await message.reply(
-        "🔗 **필수 그룹 설정 모드**\n"
+        "🔗 필수 그룹 설정 모드\n"
         "추첨 시 조건으로 설정할 그룹 링크 또는 ID를 한 줄에 하나씩 입력하세요.\n"
         "(예: https://t.me/Kooncrypto 또는 -1001234567890)\n\n"
-        f"**현재 설정:** {current_display}\n\n"
-        "입력을 완료하려면 `/end`를 보내거나 `/cancel`을 보내 취소하세요."
+        f"현재 설정:\n{current_text}\n\n"
+        "입력을 완료하려면 /end 를 보내거나 /cancel 을 보내 취소하세요."
     )
 
 
@@ -923,7 +953,10 @@ async def lottery_start_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
 
-    if not is_admin(uid) or message.chat.type not in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
+    if not is_admin(uid) or message.chat.type not in [
+        types.ChatType.GROUP,
+        types.ChatType.SUPERGROUP,
+    ]:
         return
 
     # 이미 진행 중인 추첨 확인
@@ -946,7 +979,8 @@ async def lottery_start_cmd(message: types.Message):
 
     if not required_groups:
         await message.reply(
-            "⚠️ **필수 그룹 설정 누락.** DM에서 `/set_groups` 명령어로 먼저 필수 그룹 목록을 설정해주세요."
+            "⚠️ 필수 그룹 설정이 없습니다.\n"
+            "관리자 계정으로 봇과 DM 을 열고 /set_groups 를 먼저 설정해주세요."
         )
         return
 
@@ -966,21 +1000,26 @@ async def lottery_start_cmd(message: types.Message):
     # 안내 메시지 구성
     if duration_min > 0:
         end_time = datetime.now() + timedelta(minutes=duration_min)
-        time_text = f"⏳ **{duration_min}분** 동안 진행됩니다. (예상 종료: {end_time.strftime('%H:%M')})"
+        time_text = (
+            f"⏳ {duration_min}분 동안 진행됩니다. "
+            f"(예상 종료: {end_time.strftime('%H:%M')})"
+        )
     else:
-        time_text = "⏳ **관리자가 /lottery_end 로 종료할 때까지** 진행됩니다."
+        time_text = "⏳ 관리자가 /lottery_end 로 종료할 때까지 진행됩니다."
 
     winner_text = ""
     if winner_count > 0:
-        winner_text = f"\n🎁 **총 {winner_count}명** 당첨 예정"
+        winner_text = f"\n🎁 총 {winner_count}명 당첨 예정"
 
     group_list = "\n".join([f"- {g.strip()}" for g in required_groups.split(",")])
-    group_text = f"\n\n🚨 **참여 조건:** 다음 그룹에 **모두 입장**해야 합니다.\n{group_list}"
+    group_text = (
+        "\n\n🚨 참여 조건: 다음 그룹에 모두 입장해야 합니다.\n" + group_list
+    )
 
     final_text = (
-        "🎉 **새로운 추첨이 시작되었습니다!** 🎉\n\n"
+        "🎉 새로운 추첨이 시작되었습니다! 🎉\n\n"
         f"{time_text}{winner_text}{group_text}\n\n"
-        "참여하려면 '/join'을 입력해주세요."
+        "참여하려면 /join 을 입력해주세요."
     )
 
     sent_message = await message.reply(final_text)
@@ -998,7 +1037,10 @@ async def lottery_end_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
 
-    if not is_admin(uid) or message.chat.type not in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
+    if not is_admin(uid) or message.chat.type not in [
+        types.ChatType.GROUP,
+        types.ChatType.SUPERGROUP,
+    ]:
         return
 
     lottery = get_current_lottery(chat_id)
@@ -1024,7 +1066,10 @@ async def lottery_end_cmd(message: types.Message):
 
     # 추첨 로직
     winners = random.sample(participants, winner_count)
-    winner_handles = [f"@{w['username']}" if w["username"] else f"ID:{w['user_id']}" for w in winners]
+    winner_handles = [
+        f"@{w['username']}" if w["username"] else f"ID:{w['user_id']}"
+        for w in winners
+    ]
 
     # DB 종료 처리
     end_lottery(chat_id)
@@ -1032,15 +1077,15 @@ async def lottery_end_cmd(message: types.Message):
 
     # 결과 메시지
     result_text = (
-        "🎉 **추첨 종료! 당첨자를 발표합니다!** 🎉\n\n"
-        f"총 참가자: **{len(participants)}명**\n"
-        f"당첨 인원: **{winner_count}명**\n\n"
-        "👑 **당첨자 목록:**\n"
+        "🎉 추첨 종료! 당첨자를 발표합니다! 🎉\n\n"
+        f"총 참가자: {len(participants)}명\n"
+        f"당첨 인원: {winner_count}명\n\n"
+        "👑 당첨자 목록:\n"
     )
     for handle in winner_handles:
         result_text += f"- {handle}\n"
 
-    result_text += "\n✅ 당첨자께서는 개인 DM으로 `/submit_winner` 명령을 사용해주세요!"
+    result_text += "\n✅ 당첨자께서는 개인 DM으로 /submit_winner 명령을 사용해주세요!"
 
     await message.reply(result_text)
 
@@ -1053,7 +1098,10 @@ async def lottery_join_cmd(message: types.Message):
     user = message.from_user
     chat_id = message.chat.id
 
-    if is_user_blocked(user.id) or message.chat.type not in [types.ChatType.GROUP, types.ChatType.SUPERGROUP]:
+    if is_user_blocked(user.id) or message.chat.type not in [
+        types.ChatType.GROUP,
+        types.ChatType.SUPERGROUP,
+    ]:
         return
 
     lottery = get_current_lottery(chat_id)
@@ -1062,11 +1110,15 @@ async def lottery_join_cmd(message: types.Message):
         return
 
     if not user.username:
-        await message.reply("⚠️ 참여하려면 **텔레그램 유저네임(@username)**을 설정해야 합니다.")
+        await message.reply(
+            "⚠️ 참여하려면 텔레그램 유저네임(@username)을 설정해야 합니다."
+        )
         return
 
     # 그룹 가입 조건 확인
-    required_groups = [g.strip() for g in lottery["required_groups"].split(",") if g.strip()]
+    required_groups = [
+        g.strip() for g in lottery["required_groups"].split(",") if g.strip()
+    ]
     is_qualified = True
 
     # 모든 필수 그룹에 가입했는지 확인
@@ -1076,7 +1128,9 @@ async def lottery_join_cmd(message: types.Message):
             break
 
     if not is_qualified:
-        await message.reply("⚠️ **참여 조건 미달:** 모든 필수 그룹에 가입해야 참여할 수 있습니다. 먼저 가입해주세요.")
+        await message.reply(
+            "⚠️ 참여 조건 미달: 모든 필수 그룹에 가입해야 참여할 수 있습니다. 먼저 가입해주세요."
+        )
         return
 
     # 참가자 추가
@@ -1121,7 +1175,9 @@ async def export_winners_cmd(message: types.Message):
     bio = io.BytesIO(csv_data)
     bio.name = "winners_export.csv"
 
-    await message.reply_document(types.InputFile(bio), caption="전체 당첨자 CSV 내보내기")
+    await message.reply_document(
+        types.InputFile(bio), caption="전체 당첨자 CSV 내보내기"
+    )
 
 
 # --------------------
@@ -1210,7 +1266,9 @@ async def text_handler(message: types.Message):
             handle = text
             state["handle"] = handle
             state["step"] = "new_product_name"
-            await message.reply(f"'{handle}'에 대해 변경할 **새로운 상품명**을 입력하세요.")
+            await message.reply(
+                f"'{handle}' 에 대해 변경할 새로운 상품명을 입력하세요."
+            )
             return
 
         elif step == "new_product_name":
@@ -1222,21 +1280,20 @@ async def text_handler(message: types.Message):
 
             if result is False:
                 await message.reply(
-                    f"⚠️ 오류: 당첨자 '{handle}'은(는) 이미 '{new_product_name}' 상품에 등록되어 있거나 핸들을 찾을 수 없습니다."
+                    f"⚠️ 오류: 당첨자 '{handle}' 은(는) 이미 '{new_product_name}' 상품에 등록되어 있거나 핸들을 찾을 수 없습니다."
                 )
             elif result is True:
                 await message.reply(
-                    f"✅ 당첨자 '{handle}'의 상품명이 '{new_product_name}'(으)로 변경되었습니다."
+                    f"✅ 당첨자 '{handle}' 의 상품명이 '{new_product_name}'(으)로 변경되었습니다."
                 )
             else:
                 await message.reply(
-                    f"⚠️ 오류: 당첨자 '{handle}'을(를) 찾을 수 없거나 변경된 사항이 없습니다."
+                    f"⚠️ 오류: 당첨자 '{handle}' 을(를) 찾을 수 없거나 변경된 사항이 없습니다."
                 )
             return
 
     # set_groups 플로우
     elif stype == "set_groups" and step == "groups_input":
-
         # 이전 입력값 포함하여 현재 입력된 그룹 목록에 추가
         if text != "/end":
             new_groups = [line.strip() for line in text.splitlines() if line.strip()]
@@ -1246,7 +1303,9 @@ async def text_handler(message: types.Message):
             groups_str = ",".join(state["groups"])
 
             if not groups_str:
-                await message.reply("❌ 필수 그룹 목록이 비어 있습니다. 취소하려면 /cancel을 사용하세요.")
+                await message.reply(
+                    "❌ 필수 그룹 목록이 비어 있습니다. 취소하려면 /cancel 을 사용하세요."
+                )
                 return
 
             set_admin_required_groups(uid, groups_str)
@@ -1258,13 +1317,19 @@ async def text_handler(message: types.Message):
             )
             return
 
-        await message.reply("계속 입력하거나, 완료하려면 `/end`를 보내주세요.")
+        await message.reply("계속 입력하거나, 완료하려면 /end 를 보내주세요.")
         return
 
     # 그 외는 상태 초기화 (다른 명령어가 아닌 경우)
-    if text.startswith("/") and text not in ["/start", "/form", "/list_winners", "/submit_winner", "/join"]:
+    if text.startswith("/") and text not in [
+        "/start",
+        "/form",
+        "/list_winners",
+        "/submit_winner",
+        "/join",
+        "/help",
+    ]:
         admin_states.pop(uid, None)
-
     elif not text.startswith("/"):
         # 상태가 없는 일반 텍스트는 무시
         return
