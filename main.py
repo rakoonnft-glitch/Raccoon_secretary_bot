@@ -132,7 +132,7 @@ def init_db():
             """
         )
 
-        # admin_config 테이블 (관리자별 설정 저장)
+        # admin_config 테이블 (전역 필수 그룹 설정 저장)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS admin_config (
@@ -174,10 +174,19 @@ def delete_product_winners(product_name):
 
 
 def delete_winner_by_handle(handle):
+    """
+    핸들 전체를 삭제한다. (대소문자 무시)
+    반환값: 삭제된 row 수
+    """
+    handle = handle.strip()
     if not handle.startswith("@"):
         handle = "@" + handle
     with closing(get_conn()) as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM winners WHERE handle = %s;", (handle,))
+        cur.execute(
+            "DELETE FROM winners WHERE LOWER(handle) = LOWER(%s);",
+            (handle,),
+        )
+        return cur.rowcount
 
 
 def clear_all_phones():
@@ -201,7 +210,7 @@ def update_phone_for_handle(handle, phone_number):
             """
             UPDATE winners
             SET phone_number = %s
-            WHERE handle = %s;
+            WHERE LOWER(handle) = LOWER(%s);
             """,
             (phone_number, handle),
         )
@@ -215,7 +224,7 @@ def change_product_name_for_handle(handle, new_product_name):
         # 변경하려는 상품명과 기존 핸들 조합이 이미 존재하는지 확인 (UNIQUE 제약 조건 위반 방지)
         cur.execute(
             """
-            SELECT 1 FROM winners WHERE product_name = %s AND handle = %s;
+            SELECT 1 FROM winners WHERE product_name = %s AND LOWER(handle) = LOWER(%s);
             """,
             (new_product_name, handle),
         )
@@ -226,7 +235,7 @@ def change_product_name_for_handle(handle, new_product_name):
             """
             UPDATE winners
             SET product_name = %s
-            WHERE handle = %s
+            WHERE LOWER(handle) = LOWER(%s)
             RETURNING id;
             """,
             (new_product_name, handle),
@@ -331,7 +340,7 @@ def find_pending_handle_for_user(username):
             """
             SELECT id, product_name, handle
             FROM winners
-            WHERE handle = %s
+            WHERE LOWER(handle) = LOWER(%s)
             LIMIT 1;
             """,
             (handle,),
@@ -366,10 +375,16 @@ def get_all_admin_ids():
         return cur.fetchall()
 
 
-# --- 관리자 설정 (필수 그룹) 관리 함수 ---
+# --- 필수 그룹 전역 설정 관리 함수 ---
+
+GLOBAL_CONFIG_USER_ID = 0  # admin_config에서 전역 설정용 user_id
+
 
 def set_admin_required_groups(user_id: int, groups_str: str):
-    """관리자의 기본 필수 그룹 설정을 저장/업데이트합니다."""
+    """
+    이제는 관리자별이 아니라 '전역 설정'으로 동작.
+    어떤 관리자가 /set_groups 를 실행해도 전역 값(user_id=0)을 갱신.
+    """
     with closing(get_conn()) as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -377,13 +392,26 @@ def set_admin_required_groups(user_id: int, groups_str: str):
             VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET required_groups = EXCLUDED.required_groups;
             """,
-            (user_id, groups_str),
+            (GLOBAL_CONFIG_USER_ID, groups_str),
         )
 
 
 def get_admin_required_groups(user_id: int) -> str:
-    """관리자의 기본 필수 그룹 설정을 불러옵니다."""
+    """
+    전역 설정(user_id=0)을 우선 사용.
+    향후 필요하면 user_id 별 커스텀도 추가 가능.
+    """
     with closing(get_conn()) as conn, conn.cursor() as cur:
+        # 전역 설정 먼저
+        cur.execute(
+            "SELECT required_groups FROM admin_config WHERE user_id = %s;",
+            (GLOBAL_CONFIG_USER_ID,),
+        )
+        result = cur.fetchone()
+        if result and result[0]:
+            return result[0]
+
+        # 전역 설정이 없는 경우 (예전 방식 fallback)
         cur.execute(
             "SELECT required_groups FROM admin_config WHERE user_id = %s;",
             (user_id,),
@@ -495,26 +523,36 @@ def is_user_blocked(uid: int) -> bool:
 async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
     """
     유저가 해당 그룹의 멤버인지 확인합니다.
-    그룹 링크 대신 Chat ID (예: -1001234567890)를 사용하는 것이 가장 좋습니다.
+    - 정수 Chat ID (예: -1001234567890)
+    - t.me/username 또는 t.me/+inviteLink
+    - @username
+    모두 최대한 처리하도록 개선.
     """
     group = group_link_or_id.strip()
 
     if not group:
         return True  # 조건이 없으면 통과
 
-    # 1. Chat ID로 확인
-    if group.startswith("-100") and group[1:].isdigit():
-        chat_id = int(group)
-    # 2. @username 또는 t.me/username 형태를 그대로 사용 (봇이 해당 채널/그룹에 있어야 함)
-    else:
-        # T.me 링크에서 username만 추출
-        match = re.search(r"t\.me/([a-zA-Z0-9_]+)", group)
-        if match:
-            group = "@" + match.group(1)
+    chat_id = None
+
+    # 1) 순수 Chat ID (음수 숫자)
+    if re.fullmatch(r"-\d+", group):
+        try:
+            chat_id = int(group)
+        except ValueError:
+            chat_id = None
+
+    if chat_id is None:
+        # 2) t.me 링크 처리 (일반 링크 + joinchat / + 링크 등)
+        # 예: https://t.me/xxxx, https://t.me/+xxxx, t.me/joinchat/xxxx
+        m = re.search(r"t\.me/(?:joinchat/|\+)?([A-Za-z0-9_]+)", group)
+        if m:
+            username = m.group(1)
+            group = "@" + username
         elif not group.startswith("@"):
             group = "@" + group
 
-        chat_id = group  # 봇 API가 username도 처리할 수 있음
+        chat_id = group  # username 형태 그대로 넘김
 
     try:
         member = await bot.get_chat_member(chat_id, user_id)
@@ -560,14 +598,14 @@ async def help_cmd(message: types.Message):
     ADMIN_HELP = (
         "\n🔐 관리자 전용 기능\n"
         "/set_groups (DM) - 필수 그룹 설정: /lottery 시작 시 참가 조건으로 적용할 "
-        "필수 그룹 링크 또는 Chat ID 목록을 DM으로 등록합니다.\n"
+        "필수 그룹 링크 또는 Chat ID 목록을 DM으로 등록합니다. (한 번 설정하면 모든 관리자 공통 적용)\n"
         "/lottery [분] [수] - 새로운 추첨 시작 (그룹): 현재 그룹에서 추첨 세션을 시작합니다. "
         "[분](진행 시간)과 [수](당첨자 수)를 선택적으로 지정할 수 있으며, 참가자는 /join 으로 참여합니다.\n"
         "/lottery_end [수] - 추첨 종료 및 추첨 (그룹): 진행 중인 추첨을 즉시 종료하고, "
         "참가자 중 당첨자를 랜덤으로 선정합니다. [수]를 생략하면 시작 시 설정된 당첨자 수를 사용합니다.\n"
         "\n🎯 당첨자/데이터 관리\n"
         "/add_winner - 당첨자 등록: 상품명과 당첨자 핸들 목록을 단계적으로 입력받아 DB에 추가합니다.\n"
-        "/delete_winner - 특정 핸들 삭제: 특정 당첨자 핸들을 DB에서 삭제합니다.\n"
+        "/delete_winner - 특정 핸들 삭제: 특정 당첨자 핸들을 DB에서 완전히 삭제합니다.\n"
         "/delete_product_winners - 상품별 전체 삭제: 특정 상품에 해당하는 모든 당첨자 명단을 삭제합니다.\n"
         "/change_product_name - 상품명 변경: 특정 핸들의 당첨 상품명을 다른 상품명으로 변경합니다.\n"
         "/show_winners - 전체 상세 조회: 당첨자 목록과 제출된 전화번호를 모두 포함하여 보여줍니다.\n"
@@ -575,7 +613,7 @@ async def help_cmd(message: types.Message):
         "/show_winners_without_phone - 전화번호 미제출자만 보기\n"
         "/clear_phones_all - 전체 전화번호 삭제\n"
         "/clear_phones_product - 상품별 전화번호 삭제\n"
-        "/export_winners - CSV 내보내기: 전체 당첨자 데이터를 CSV 파일로 다운로드합니다.\n"
+        "/export_winners - CSV 내보내기: 전체 당첨자 데이터를 CSV 파일으로 다운로드합니다.\n"
         "\n👑 봇 제어 및 관리자 명단 관리\n"
         "/add_admin [ID] - 관리자 추가\n"
         "/del_admin [ID] - 관리자 삭제 (자신은 삭제 불가)\n"
@@ -940,7 +978,7 @@ async def set_groups_cmd(message: types.Message):
         "🔗 필수 그룹 설정 모드\n"
         "추첨 시 조건으로 설정할 그룹 링크 또는 ID를 한 줄에 하나씩 입력하세요.\n"
         "(예: https://t.me/Kooncrypto 또는 -1001234567890)\n\n"
-        f"현재 설정:\n{current_text}\n\n"
+        f"현재 전역 설정:\n{current_text}\n\n"
         "입력을 완료하려면 /end 를 보내거나 /cancel 을 보내 취소하세요."
     )
 
@@ -966,7 +1004,6 @@ async def lottery_start_cmd(message: types.Message):
         await message.reply("⚠️ 이 명령어는 그룹 채팅에서만 사용할 수 있습니다.")
         return
 
-
     # 이미 진행 중인 추첨 확인
     if get_current_lottery(chat_id):
         await message.reply("⚠️ 이 채팅방에는 이미 추첨이 진행 중입니다.")
@@ -982,7 +1019,7 @@ async def lottery_start_cmd(message: types.Message):
     if len(args) > 1 and args[1].isdigit():
         winner_count = int(args[1])
 
-    # DM에서 설정된 필수 그룹 목록 가져오기
+    # 전역 필수 그룹 목록 가져오기
     required_groups = get_admin_required_groups(uid)
 
     if not required_groups:
@@ -1019,9 +1056,10 @@ async def lottery_start_cmd(message: types.Message):
     if winner_count > 0:
         winner_text = f"\n🎁 총 {winner_count}명 당첨 예정"
 
-    group_list = "\n".join([f"- {g.strip()}" for g in required_groups.split(",")])
+    # 유저에게는 구체적인 그룹 ID/링크는 숨기고, 조건만 간략히 안내
     group_text = (
-        "\n\n🚨 참여 조건: 다음 그룹에 모두 입장해야 합니다.\n" + group_list
+        "\n\n🚨 참여 조건: 사전에 설정된 필수 그룹(채널/커뮤니티)에 모두 가입한 경우에만 "
+        "당첨이 유효합니다."
     )
 
     final_text = (
@@ -1131,7 +1169,8 @@ async def lottery_join_cmd(message: types.Message):
 
     # 모든 필수 그룹에 가입했는지 확인
     for group in required_groups:
-        if not await is_user_member_of_group(user.id, group):
+        ok = await is_user_member_of_group(user.id, group)
+        if not ok:
             is_qualified = False
             break
 
@@ -1255,9 +1294,12 @@ async def text_handler(message: types.Message):
     # delete_winner 플로우
     elif stype == "delete_winner" and step == "handle":
         handle = text
-        delete_winner_by_handle(handle)
+        deleted = delete_winner_by_handle(handle)
         admin_states.pop(uid, None)
-        await message.reply(f"{handle} 삭제되었습니다.")
+        if deleted > 0:
+            await message.reply(f"{handle} 관련 당첨자 {deleted}개 레코드가 삭제되었습니다.")
+        else:
+            await message.reply(f"⚠️ '{handle}' 에 해당하는 당첨자를 찾지 못했습니다.")
         return
 
     # clear_phones_product 플로우
@@ -1316,11 +1358,12 @@ async def text_handler(message: types.Message):
                 )
                 return
 
+            # 전역 필수 그룹 설정 갱신
             set_admin_required_groups(uid, groups_str)
             admin_states.pop(uid, None)
 
             await message.reply(
-                "✅ 필수 그룹이 다음으로 설정되었습니다:\n"
+                "✅ 전역 필수 그룹이 다음으로 설정되었습니다:\n"
                 + groups_str.replace(",", "\n")
             )
             return
