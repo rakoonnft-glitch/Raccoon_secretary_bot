@@ -74,7 +74,7 @@ def load_admin_ids():
 
 def init_db():
     with closing(get_conn()) as conn, conn.cursor() as cur:
-        # winners 테이블 (기존)
+        # winners 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS winners (
@@ -146,7 +146,7 @@ def init_db():
         logger.info("DB 스키마 초기화 완료 및 관리자 ID 로드 완료")
 
 
-# --- 당첨자 관리 함수 (기존) ---
+# --- 당첨자 관리 함수 ---
 
 def add_winners(product_name, handles):
     if not handles:
@@ -175,7 +175,7 @@ def delete_product_winners(product_name):
 
 def delete_winner_by_handle(handle):
     """
-    핸들 전체를 삭제한다. (대소문자 무시)
+    (예비용) 핸들 전체를 삭제한다. (대소문자 무시)
     반환값: 삭제된 row 수
     """
     handle = handle.strip()
@@ -185,6 +185,26 @@ def delete_winner_by_handle(handle):
         cur.execute(
             "DELETE FROM winners WHERE LOWER(handle) = LOWER(%s);",
             (handle,),
+        )
+        return cur.rowcount
+
+
+def delete_winner_by_product_and_handle(product_name, handle):
+    """
+    특정 상품명 + 핸들 조합으로 삭제.
+    반환값: 삭제된 row 수
+    """
+    handle = handle.strip()
+    if not handle.startswith("@"):
+        handle = "@" + handle
+    with closing(get_conn()) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM winners
+            WHERE product_name = %s
+              AND LOWER(handle) = LOWER(%s);
+            """,
+            (product_name, handle),
         )
         return cur.rowcount
 
@@ -399,7 +419,6 @@ def set_admin_required_groups(user_id: int, groups_str: str):
 def get_admin_required_groups(user_id: int) -> str:
     """
     전역 설정(user_id=0)을 우선 사용.
-    향후 필요하면 user_id 별 커스텀도 추가 가능.
     """
     with closing(get_conn()) as conn, conn.cursor() as cur:
         # 전역 설정 먼저
@@ -544,7 +563,6 @@ async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
 
     if chat_id is None:
         # 2) t.me 링크 처리 (일반 링크 + joinchat / + 링크 등)
-        # 예: https://t.me/xxxx, https://t.me/+xxxx, t.me/joinchat/xxxx
         m = re.search(r"t\.me/(?:joinchat/|\+)?([A-Za-z0-9_]+)", group)
         if m:
             username = m.group(1)
@@ -562,7 +580,6 @@ async def is_user_member_of_group(user_id: int, group_link_or_id: str) -> bool:
             types.ChatMemberStatus.ADMINISTRATOR,
         ]
     except Exception as e:
-        # 그룹을 찾을 수 없거나 (400 Bad Request) 봇이 그룹에 없는 경우
         logger.warning(f"그룹 멤버 확인 오류 for {group}: {e}")
         return False
 
@@ -605,15 +622,15 @@ async def help_cmd(message: types.Message):
         "참가자 중 당첨자를 랜덤으로 선정합니다. [수]를 생략하면 시작 시 설정된 당첨자 수를 사용합니다.\n"
         "\n🎯 당첨자/데이터 관리\n"
         "/add_winner - 당첨자 등록: 상품명과 당첨자 핸들 목록을 단계적으로 입력받아 DB에 추가합니다.\n"
-        "/delete_winner - 특정 핸들 삭제: 특정 당첨자 핸들을 DB에서 완전히 삭제합니다.\n"
+        "/delete_winner - 특정 상품의 특정 핸들 삭제\n"
         "/delete_product_winners - 상품별 전체 삭제: 특정 상품에 해당하는 모든 당첨자 명단을 삭제합니다.\n"
         "/change_product_name - 상품명 변경: 특정 핸들의 당첨 상품명을 다른 상품명으로 변경합니다.\n"
-        "/show_winners - 전체 상세 조회: 당첨자 목록과 제출된 전화번호를 모두 포함하여 보여줍니다.\n"
-        "/show_winners_with_phone - 전화번호 제출자만 보기\n"
+        "/show_winners - 전체 상세 조회 (DM 전용): 당첨자 목록과 제출된 전화번호를 모두 포함하여 보여줍니다.\n"
+        "/show_winners_with_phone - 전화번호 제출자만 보기 (DM 전용)\n"
         "/show_winners_without_phone - 전화번호 미제출자만 보기\n"
         "/clear_phones_all - 전체 전화번호 삭제\n"
         "/clear_phones_product - 상품별 전화번호 삭제\n"
-        "/export_winners - CSV 내보내기: 전체 당첨자 데이터를 CSV 파일으로 다운로드합니다.\n"
+        "/export_winners - CSV 내보내기 (DM 전용): 전체 당첨자 데이터를 CSV 파일로 다운로드합니다.\n"
         "\n👑 봇 제어 및 관리자 명단 관리\n"
         "/add_admin [ID] - 관리자 추가\n"
         "/del_admin [ID] - 관리자 삭제 (자신은 삭제 불가)\n"
@@ -717,7 +734,6 @@ async def add_admin_cmd(message: types.Message):
 
     target_id = int(args[0])
 
-    # ID가 실제 유저인지 확인이 어려우므로 일단 DB에 추가
     add_admin_to_db(target_id, f"ID:{target_id}")
     await message.reply(f"✅ 관리자 명단에 ID {target_id} 를 추가했습니다.")
 
@@ -762,7 +778,7 @@ async def list_admins_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자: 봇 ON/OFF/STATUS (기존)
+# 관리자: 봇 ON/OFF/STATUS
 # --------------------
 @dp.message_handler(commands=["bot_off"])
 async def bot_off_cmd(message: types.Message):
@@ -797,12 +813,20 @@ async def bot_status_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자: 조회 계열 (기존)
+# 관리자: 조회 계열
 # --------------------
 @dp.message_handler(commands=["show_winners"])
 async def show_winners_cmd(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
+        return
+
+    # DM 전용
+    if message.chat.type != types.ChatType.PRIVATE:
+        await message.reply(
+            "⚠️ 이 명령어는 개인정보 보호를 위해 1:1 DM에서만 사용할 수 있습니다.\n"
+            "봇과의 개인 채팅에서 /show_winners 를 다시 입력해주세요."
+        )
         return
 
     grouped = get_winners_with_phones_grouped()
@@ -825,6 +849,13 @@ async def show_winners_cmd(message: types.Message):
 async def show_winners_with_phone_cmd(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
+        return
+
+    # 이것도 전화번호라 DM 전용으로 제한
+    if message.chat.type != types.ChatType.PRIVATE:
+        await message.reply(
+            "⚠️ 이 명령어는 개인정보 보호를 위해 1:1 DM에서만 사용할 수 있습니다."
+        )
         return
 
     grouped = get_winners_with_phone_only()
@@ -864,7 +895,7 @@ async def show_winners_without_phone_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자: CRUD 계열 (기존 + 변경)
+# 관리자: CRUD 계열
 # --------------------
 @dp.message_handler(commands=["cancel"])
 async def cancel_cmd(message: types.Message):
@@ -912,11 +943,13 @@ async def delete_winner_cmd(message: types.Message):
     if not is_admin(uid):
         return
 
+    # 1단계: 상품명부터 받기
     admin_states[uid] = {
         "type": "delete_winner",
-        "step": "handle",
+        "step": "product_name",
+        "product_name": None,
     }
-    await message.reply("삭제할 핸들을 입력하세요. (예: @username)")
+    await message.reply("먼저 삭제할 상품명을 입력하세요.")
 
 
 @dp.message_handler(commands=["change_product_name"])
@@ -1056,7 +1089,6 @@ async def lottery_start_cmd(message: types.Message):
     if winner_count > 0:
         winner_text = f"\n🎁 총 {winner_count}명 당첨 예정"
 
-    # 유저에게는 구체적인 그룹 ID/링크는 숨기고, 조건만 간략히 안내
     group_text = (
         "\n\n🚨 참여 조건: 사전에 설정된 필수 그룹(채널/커뮤니티)에 모두 가입한 경우에만 "
         "당첨이 유효합니다."
@@ -1110,18 +1142,15 @@ async def lottery_end_cmd(message: types.Message):
     if winner_count > len(participants):
         winner_count = len(participants)
 
-    # 추첨 로직
     winners = random.sample(participants, winner_count)
     winner_handles = [
         f"@{w['username']}" if w["username"] else f"ID:{w['user_id']}"
         for w in winners
     ]
 
-    # DB 종료 처리
     end_lottery(chat_id)
     clear_participants(chat_id)
 
-    # 결과 메시지
     result_text = (
         "🎉 추첨 종료! 당첨자를 발표합니다! 🎉\n\n"
         f"총 참가자: {len(participants)}명\n"
@@ -1161,13 +1190,11 @@ async def lottery_join_cmd(message: types.Message):
         )
         return
 
-    # 그룹 가입 조건 확인
     required_groups = [
         g.strip() for g in lottery["required_groups"].split(",") if g.strip()
     ]
     is_qualified = True
 
-    # 모든 필수 그룹에 가입했는지 확인
     for group in required_groups:
         ok = await is_user_member_of_group(user.id, group)
         if not ok:
@@ -1180,7 +1207,6 @@ async def lottery_join_cmd(message: types.Message):
         )
         return
 
-    # 참가자 추가
     join_success = add_participant(chat_id, user.id, user.username)
 
     if join_success:
@@ -1190,12 +1216,19 @@ async def lottery_join_cmd(message: types.Message):
 
 
 # --------------------
-# 관리자: CSV 내보내기 (기존)
+# 관리자: CSV 내보내기
 # --------------------
 @dp.message_handler(commands=["export_winners"])
 async def export_winners_cmd(message: types.Message):
     uid = message.from_user.id
     if not is_admin(uid):
+        return
+
+    # 개인정보 포함되므로 DM 전용
+    if message.chat.type != types.ChatType.PRIVATE:
+        await message.reply(
+            "⚠️ 이 명령어는 개인정보 보호를 위해 1:1 DM에서만 사용할 수 있습니다."
+        )
         return
 
     rows = get_all_rows_for_export()
@@ -1291,16 +1324,30 @@ async def text_handler(message: types.Message):
         await message.reply(f"'{product_name}' 상품의 당첨자가 모두 삭제되었습니다.")
         return
 
-    # delete_winner 플로우
-    elif stype == "delete_winner" and step == "handle":
-        handle = text
-        deleted = delete_winner_by_handle(handle)
-        admin_states.pop(uid, None)
-        if deleted > 0:
-            await message.reply(f"{handle} 관련 당첨자 {deleted}개 레코드가 삭제되었습니다.")
-        else:
-            await message.reply(f"⚠️ '{handle}' 에 해당하는 당첨자를 찾지 못했습니다.")
-        return
+    # delete_winner 플로우 (상품명 -> 핸들 순서)
+    elif stype == "delete_winner":
+        if step == "product_name":
+            state["product_name"] = text
+            state["step"] = "handle"
+            await message.reply(
+                f"'{text}' 상품에서 삭제할 핸들을 입력하세요. (예: @username)"
+            )
+            return
+
+        elif step == "handle":
+            product_name = state.get("product_name")
+            handle = text
+            deleted = delete_winner_by_product_and_handle(product_name, handle)
+            admin_states.pop(uid, None)
+            if deleted > 0:
+                await message.reply(
+                    f"'{product_name}' 상품에서 {handle} 관련 당첨자 {deleted}개 레코드가 삭제되었습니다."
+                )
+            else:
+                await message.reply(
+                    f"⚠️ '{product_name}' 상품에서 '{handle}' 에 해당하는 당첨자를 찾지 못했습니다."
+                )
+            return
 
     # clear_phones_product 플로우
     elif stype == "clear_phones_product" and step == "product_name":
@@ -1344,7 +1391,6 @@ async def text_handler(message: types.Message):
 
     # set_groups 플로우
     elif stype == "set_groups" and step == "groups_input":
-        # 이전 입력값 포함하여 현재 입력된 그룹 목록에 추가
         if text != "/end":
             new_groups = [line.strip() for line in text.splitlines() if line.strip()]
             state["groups"].extend(new_groups)
@@ -1358,7 +1404,6 @@ async def text_handler(message: types.Message):
                 )
                 return
 
-            # 전역 필수 그룹 설정 갱신
             set_admin_required_groups(uid, groups_str)
             admin_states.pop(uid, None)
 
@@ -1382,7 +1427,6 @@ async def text_handler(message: types.Message):
     ]:
         admin_states.pop(uid, None)
     elif not text.startswith("/"):
-        # 상태가 없는 일반 텍스트는 무시
         return
 
 
