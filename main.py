@@ -176,7 +176,7 @@ def delete_product_winners(product_name):
 def delete_winner_by_handle(handle):
     """
     (사용은 남겨두지만, /delete_winner 명령어에서는
-    이제 product_name + handle 조합 삭제를 사용)
+    이제 product_name + handle 조합 삭제 또는 복수 삭제를 사용)
     """
     handle = handle.strip()
     if not handle.startswith("@"):
@@ -206,6 +206,31 @@ def delete_winner_by_product_and_handle(product_name, handle):
             (product_name, handle),
         )
         return cur.rowcount
+
+
+def delete_winners_by_product_and_handles(product_name, handles):
+    """
+    특정 상품명에서 여러 핸들을 한 번에 삭제.
+    반환값: {입력한_원본핸들: 삭제된 row 수}
+    """
+    results = {}
+    with closing(get_conn()) as conn, conn.cursor() as cur:
+        for raw in handles:
+            h = raw.strip()
+            if not h:
+                continue
+            if not h.startswith("@"):
+                h = "@" + h
+
+            cur.execute(
+                """
+                DELETE FROM winners
+                WHERE product_name = %s AND LOWER(handle) = LOWER(%s);
+                """,
+                (product_name, h),
+            )
+            results[raw] = cur.rowcount
+    return results
 
 
 def clear_all_phones():
@@ -621,7 +646,7 @@ async def help_cmd(message: types.Message):
         "참가자 중 당첨자를 랜덤으로 선정합니다. [수]를 생략하면 시작 시 설정된 당첨자 수를 사용합니다.\n"
         "\n🎯 당첨자/데이터 관리\n"
         "/add_winner - 당첨자 등록: 상품명과 당첨자 핸들 목록을 단계적으로 입력받아 DB에 추가합니다.\n"
-        "/delete_winner - 특정 상품에서 특정 핸들 삭제: 상품명과 핸들을 입력해 해당 조합만 삭제합니다.\n"
+        "/delete_winner - 특정 상품에서 입력한 여러 핸들 삭제: 상품명과 핸들 목록을 입력해 해당 조합만 삭제합니다.\n"
         "/delete_product_winners - 상품별 전체 삭제: 특정 상품에 해당하는 모든 당첨자 명단을 삭제합니다.\n"
         "/change_product_name - 상품명 변경: 특정 핸들의 당첨 상품명을 다른 상품명으로 변경합니다.\n"
         "/show_winners (DM) - 전체 상세 조회: 당첨자 목록과 제출된 전화번호를 모두 포함하여 보여줍니다.\n"
@@ -820,7 +845,7 @@ async def show_winners_cmd(message: types.Message):
     if not is_admin(uid):
         return
     if message.chat.type != types.ChatType.PRIVATE:
-        await message.reply("⚠️ 이 명령어는 1:1 DM 에서만 사용 가능합니다.")
+        await message.reply("⚠️ 이 명령어는 개인정보 보호를 위해 1:1 DM 에서만 사용 가능합니다.")
         return
 
     grouped = get_winners_with_phones_grouped()
@@ -845,7 +870,7 @@ async def show_winners_with_phone_cmd(message: types.Message):
     if not is_admin(uid):
         return
     if message.chat.type != types.ChatType.PRIVATE:
-        await message.reply("⚠️ 이 명령어는 1:1 DM 에서만 사용 가능합니다.")
+        await message.reply("⚠️ 이 명령어는 개인정보 보호를 위해 1:1 DM 에서만 사용 가능합니다.")
         return
 
     grouped = get_winners_with_phone_only()
@@ -931,7 +956,7 @@ async def delete_product_cmd(message: types.Message):
 async def delete_winner_cmd(message: types.Message):
     """
     1) 상품명 입력
-    2) 핸들 입력
+    2) 삭제할 핸들들을 여러 줄로 입력 (/end 로 종료 가능)
     """
     uid = message.from_user.id
     if not is_admin(uid):
@@ -1310,28 +1335,55 @@ async def text_handler(message: types.Message):
         await message.reply(f"'{product_name}' 상품의 당첨자가 모두 삭제되었습니다.")
         return
 
-    # delete_winner 플로우 (상품명 -> 핸들)
+    # delete_winner 플로우 (상품명 -> 여러 핸들)
     elif stype == "delete_winner":
         if step == "product_name":
             state["product_name"] = text
-            state["step"] = "handle"
+            state["step"] = "handles"
             await message.reply(
-                f"'{text}' 상품에서 삭제할 핸들을 입력하세요. (예: @username)"
+                f"'{text}' 상품에서 삭제할 핸들을 한 줄에 하나씩 입력하세요.\n"
+                "입력을 마치려면 /end 를 입력하세요."
             )
             return
 
-        elif step == "handle":
+        elif step == "handles":
+            if text.strip() == "/end":
+                admin_states.pop(uid, None)
+                await message.reply("삭제 작업을 종료했습니다.")
+                return
+
             product_name = state.get("product_name")
-            handle = text
-            deleted = delete_winner_by_product_and_handle(product_name, handle)
-            admin_states.pop(uid, None)
-            if deleted > 0:
+            handles = [h.strip() for h in text.splitlines() if h.strip()]
+
+            if not handles:
                 await message.reply(
-                    f"'{product_name}' 상품에서 {handle} 관련 당첨자 {deleted}개 레코드가 삭제되었습니다."
+                    "⚠️ 유효한 핸들이 없습니다. 다시 입력하거나 /end 로 종료할 수 있습니다."
                 )
+                return
+
+            results = delete_winners_by_product_and_handles(product_name, handles)
+            admin_states.pop(uid, None)
+
+            deleted = [h for h, c in results.items() if c > 0]
+            not_found = [h for h, c in results.items() if c == 0]
+
+            reply_parts = []
+            if deleted:
+                reply_parts.append(
+                    f"✅ '{product_name}' 상품에서 다음 핸들이 삭제되었습니다:\n"
+                    + "\n".join(f"- {h}" for h in deleted)
+                )
+            if not_found:
+                reply_parts.append(
+                    f"⚠️ '{product_name}' 상품에서 찾지 못한 핸들:\n"
+                    + "\n".join(f"- {h}" for h in not_found)
+                )
+
+            if reply_parts:
+                await message.reply("\n\n".join(reply_parts))
             else:
                 await message.reply(
-                    f"⚠️ '{product_name}' 상품에서 '{handle}' 에 해당하는 당첨자를 찾지 못했습니다."
+                    f"⚠️ 삭제된 레코드가 없습니다. 상품명과 핸들을 다시 확인해주세요."
                 )
             return
 
